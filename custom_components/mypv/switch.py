@@ -7,7 +7,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import CONF_HOST, CONF_DEVICE
 
 from .const import DOMAIN, DATA_COORDINATOR, WIFI_METER_NAME
-from .coordinator import MYPVDataUpdateCoordinator
+from .coordinator import MYPVDataUpdateCoordinator, _SSL_NO_VERIFY
 
 import logging
 import aiohttp
@@ -78,6 +78,10 @@ class ToggleSwitch(CoordinatorEntity, SwitchEntity):
     
     async def async_toggle_switch(self, mode):
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://{self._host}/data.jsn?devmode={mode}") as response:
+            if not await self.coordinator.async_authenticate_session(session):
+                _LOGGER.error("Authentication failed for my-PV device at %s", self._host)
+                return
+
+            async with session.get(f"https://{self._host}/data.jsn?devmode={mode}", ssl=_SSL_NO_VERIFY) as response:
                 if response.status != 200:
                     _LOGGER.error(f"Failed to turn on/off the device {self.unique_id}")

@@ -12,6 +12,11 @@ from homeassistant.const import (
 
 DOMAIN = "mypv"
 
+CONF_UPDATE_KEY = "update_key"
+# Optional global fallback for existing entries without stored credentials.
+# Set this to your device update key if you want automatic auth for old entries.
+DEFAULT_UPDATE_KEY = ""
+
 DATA_COORDINATOR = "coordinator"
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)

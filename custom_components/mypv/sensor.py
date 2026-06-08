@@ -1,8 +1,10 @@
 """The my-PV integration."""
 
 import logging
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.const import CONF_MONITORED_CONDITIONS
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity_registry import async_get
 from homeassistant.const import (
     UnitOfElectricCurrent,
     UnitOfFrequency,
@@ -22,7 +24,21 @@ from .coordinator import MYPVDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-from homeassistant.helpers.entity_registry import async_get
+
+def _resolve_sensor_name(sensor_key, entry_title):
+    """Resolve the visible sensor name for unique_id generation."""
+    if WIFI_METER_NAME in entry_title:
+        return WIFI_METER_SENSOR_TYPES[sensor_key][0]
+    return SENSOR_TYPES[sensor_key][0]
+
+
+def _build_expected_unique_ids(configured_sensors, serial_number, entry_title):
+    """Build unique_ids expected for configured sensor keys."""
+    expected = set()
+    for sensor_key in configured_sensors:
+        sensor_name = _resolve_sensor_name(sensor_key, entry_title)
+        expected.add(f"{serial_number} {sensor_name}")
+    return expected
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -37,6 +53,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
         configured_sensors = entry.data[CONF_MONITORED_CONDITIONS]
 
     entity_registry = async_get(hass)
+    serial_number = coordinator.data["info"].get("sn")
+    expected_unique_ids = _build_expected_unique_ids(
+        configured_sensors, serial_number, entry.title
+    )
 
     current_entities = []
     for entity in entity_registry.entities.values():
@@ -45,7 +65,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     sensors_to_remove = []
     for entity in current_entities:
-        if entity.entity_id not in configured_sensors:
+        if entity.unique_id not in expected_unique_ids:
             sensors_to_remove.append(entity)
 
     for entity in sensors_to_remove:
@@ -59,7 +79,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(entities)
 
 
-class MypvDevice(CoordinatorEntity):
+class MypvDevice(CoordinatorEntity, SensorEntity):
     """Representation of a my-PV device."""
 
     def __init__(self, coordinator, sensor_type, name):
@@ -133,6 +153,24 @@ class MypvDevice(CoordinatorEntity):
         if self._unit_of_measurement == UnitOfElectricCurrent.AMPERE:
             return state / 10
         return state
+
+    @property
+    def native_value(self):
+        """Return the native sensor value."""
+        return self.state
+
+    @property
+    def native_unit_of_measurement(self):
+        """Return the native unit of measurement."""
+        return self._unit_of_measurement
+
+    @property
+    def state_class(self):
+        """Expose measurement state class for numeric sensors with units."""
+        value = self.native_value
+        if self._unit_of_measurement is not None and isinstance(value, (int, float)):
+            return SensorStateClass.MEASUREMENT
+        return None
 
     @property
     def unit_of_measurement(self):

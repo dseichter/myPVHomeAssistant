@@ -7,6 +7,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import CONF_HOST, CONF_DEVICE
 
 from .const import DOMAIN, DATA_COORDINATOR, WIFI_METER_NAME, BOOST_BUTTON_NAME
+from .coordinator import _SSL_NO_VERIFY
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,17 +24,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         async_add_entities(entities)
 
 class MYPVButton(CoordinatorEntity, ButtonEntity):
-    def __init__(self, hass, coordinator, host, icon, name, deviceName) -> None:
+    def __init__(self, hass, coordinator, host, icon, name, device_name) -> None:
         """Initialize the button"""
         super().__init__(coordinator)
         self._hass = hass
         self._icon = icon
         self._name = name
-        self._device_name = deviceName
+        self._device_name = device_name
         self._host = host
-        self._model = self.coordinator.data["info"]["device"]
-        self.serial_number = self.coordinator.data["info"]["sn"]
         self._button = f"{self.name}_{self._host}"
+
+    def _device_metadata(self):
+        """Return coordinator metadata when available."""
+        data = self.coordinator.data or {}
+        info = data.get("info")
+        if isinstance(info, dict):
+            return info
+        return {}
 
     @property
     def name(self):
@@ -46,28 +53,35 @@ class MYPVButton(CoordinatorEntity, ButtonEntity):
     @property
     def device_info(self):
         """Return information about the device."""
+        metadata = self._device_metadata()
+        serial_number = metadata.get("sn") or self._host
         return {
-            "identifiers": {(DOMAIN, self.serial_number)},
+            "identifiers": {(DOMAIN, serial_number)},
             "name": self._device_name,
             "manufacturer": "my-PV",
-            "model": self._model,
+            "model": metadata.get("device") or self._device_name,
         }
     
     @property
     def unique_id(self):
         """Return unique id based on device serial and variable."""
-        return "{} {}".format(self.serial_number, self._button)
+        serial_number = self._device_metadata().get("sn") or self._host
+        return "{} {}".format(serial_number, self._button)
 
     async def async_press(self) -> None:
         """Handle button press."""
         async with aiohttp.ClientSession() as session:
+            if not await self.coordinator.async_authenticate_session(session):
+                _LOGGER.error("Authentication failed for my-PV device at %s", self._host)
+                return
+
             if self._name == BOOST_BUTTON_NAME:
-                async with session.get(f"http://{self._host}/data.jsn") as response:
+                async with session.get(f"https://{self._host}/data.jsn", ssl=_SSL_NO_VERIFY) as response:
                     if response.status == 200:
                         data = await response.json()
                         boostActive = data.get("boostactive")
                         newBoost = not boostActive
-                        async with session.get(f"http://{self._host}/data.jsn?bststrt={int(newBoost)}") as response2:
+                        async with session.get(f"https://{self._host}/data.jsn?bststrt={int(newBoost)}", ssl=_SSL_NO_VERIFY) as response2:
                             if response2.status != 200:
                                 _LOGGER.error("Failed to (de-)activate boost")
                     else:
@@ -90,7 +104,7 @@ class MYPVButton(CoordinatorEntity, ButtonEntity):
                 if number_state:
                     try:
                         number_value = float(number_state.state)
-                        async with session.get(f"http://{self._host}/data.jsn?ww1boost={number_value*10}") as response3:
+                        async with session.get(f"https://{self._host}/data.jsn?ww1boost={number_value*10}", ssl=_SSL_NO_VERIFY) as response3:
                             if response3.status != 200:
                                 _LOGGER.error("Failed to save ww1boost settings")
                     except ValueError:

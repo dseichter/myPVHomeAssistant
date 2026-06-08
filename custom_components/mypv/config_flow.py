@@ -6,6 +6,7 @@ import aiofiles
 import asyncio
 import json
 import socket
+import ssl
 from aiohttp import ClientTimeout
 from aiofiles import os as aio_os
 
@@ -19,9 +20,13 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DOMAIN, SENSOR_TYPES, DEFAULT_MENU_OPTIONS, WIFI_METER_NAME, WIFI_METER_SENSOR_TYPES, DEFAULT_MONITORED_CONDITIONS, AC_ELWA_E_NAME
+from .const import DOMAIN, SENSOR_TYPES, DEFAULT_MENU_OPTIONS, WIFI_METER_NAME, WIFI_METER_SENSOR_TYPES, DEFAULT_MONITORED_CONDITIONS, AC_ELWA_E_NAME, CONF_UPDATE_KEY, DEFAULT_UPDATE_KEY
 
 _LOGGER = logging.getLogger(__name__)
+
+_SSL_NO_VERIFY = ssl.create_default_context()
+_SSL_NO_VERIFY.check_hostname = False
+_SSL_NO_VERIFY.verify_mode = ssl.CERT_NONE
 
 @callback
 def mypv_entries(hass: HomeAssistant):
@@ -41,9 +46,30 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._errors = {}
         self._info = {}
         self._host = None
+        self._update_key = DEFAULT_UPDATE_KEY
         self._filtered_sensor_types = {}
         self._devices = {}
         self._device_name = None
+
+    async def _authenticate_session(self, session, host) -> bool:
+        """Authenticate against /auth.jsn and keep cookie in session."""
+        if not self._update_key:
+            return True
+
+        timeout = ClientTimeout(total=5)
+        async with session.post(
+            f"https://{host}/auth.jsn",
+            timeout=timeout,
+            ssl=_SSL_NO_VERIFY,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={"pw": self._update_key},
+        ) as response:
+            if response.status != 200:
+                return False
+
+            payload = await response.json(content_type=None)
+            auth_flag = payload.get("auth")
+            return auth_flag in (1, True, "1")
 
     def _host_in_configuration_exists(self, host) -> bool:
         """Return True if host exists in configuration."""
@@ -53,8 +79,18 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Fetch sensor data and update _filtered_sensor_types."""
         async with aiohttp.ClientSession() as session:
             try:
+                is_authenticated = await self._authenticate_session(session, host)
+                if not is_authenticated:
+                    _LOGGER.error("Authentication failed during sensor fetch for host %s", host)
+                    self._filtered_sensor_types = {}
+                    return
+
                 timeout = ClientTimeout(total=5)
-                async with session.get(f"http://{host}/data.jsn", timeout=timeout) as response:
+                async with session.get(
+                    f"https://{host}/data.jsn",
+                    timeout=timeout,
+                    ssl=_SSL_NO_VERIFY,
+                ) as response:
                     if response.status == 200:
                         data = await response.json()
                         json_keys = set(data.keys())
@@ -119,6 +155,7 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ip_known(self, user_input=None):
         if user_input is not None:
             self._host = user_input[CONF_HOST]
+            self._update_key = user_input.get(CONF_UPDATE_KEY, DEFAULT_UPDATE_KEY)
             if self.is_valid_ip(self._host):
                 device = await self.check_ip_device(self._host)
                 if device:
@@ -140,7 +177,10 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         user_input = user_input or {CONF_HOST: "192.168.0.0"}
 
         ip_known_schema = vol.Schema(
-            {vol.Required(CONF_HOST, default="192.168.0.0"): str}
+            {
+                vol.Required(CONF_HOST, default="192.168.0.0"): str,
+                vol.Optional(CONF_UPDATE_KEY, default=self._update_key): str,
+            }
         )
         return self.async_show_form(
             step_id="ip_known",
@@ -256,8 +296,16 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     
     async def check_device(self, session, ip):
         try:
+            is_authenticated = await self._authenticate_session(session, ip)
+            if not is_authenticated:
+                return None
+
             timeout = ClientTimeout(total=15)
-            async with session.get(f"http://{ip}/mypv_dev.jsn", timeout=timeout) as response:
+            async with session.get(
+                f"https://{ip}/mypv_dev.jsn",
+                timeout=timeout,
+                ssl=_SSL_NO_VERIFY,
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("device")
@@ -274,12 +322,14 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             selected_sensors = user_input[CONF_MONITORED_CONDITIONS]
+            self._update_key = user_input.get(CONF_UPDATE_KEY, self._update_key)
             self._info['device'] = user_input.get('device', self._info.get('device'))
             self._info['number'] = user_input.get('number', self._info.get('number'))
             return self.async_create_entry(
                 title=f"{self._devices[self._host]}",
                 data={
                     CONF_HOST: self._host,
+                    CONF_UPDATE_KEY: self._update_key,
                     CONF_MONITORED_CONDITIONS: selected_sensors,
                     '_filtered_sensor_types': self._filtered_sensor_types,
                     'selected_sensors': selected_sensors,
@@ -297,6 +347,7 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_MONITORED_CONDITIONS, default = default_monitored_conditions
                 ): cv.multi_select(self._filtered_sensor_types),
+                vol.Optional(CONF_UPDATE_KEY, default=self._update_key): str,
             }
         )
 
@@ -316,7 +367,11 @@ class MypvOptionsFlowHandler(config_entries.OptionsFlow):
         """Initialize options flow."""
         self.config_entry = config_entry
         self.filtered_sensor_types = config_entry.data.get('_filtered_sensor_types', {})
-        self.selected_sensors = config_entry.data.get('selected_sensors', [])  
+        self.selected_sensors = config_entry.data.get('selected_sensors', [])
+        self.update_key = config_entry.options.get(
+            CONF_UPDATE_KEY,
+            config_entry.data.get(CONF_UPDATE_KEY, DEFAULT_UPDATE_KEY),
+        )
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
@@ -325,6 +380,7 @@ class MypvOptionsFlowHandler(config_entries.OptionsFlow):
                 title="",
                 data={
                     CONF_MONITORED_CONDITIONS: user_input[CONF_MONITORED_CONDITIONS],
+                    CONF_UPDATE_KEY: user_input.get(CONF_UPDATE_KEY, self.update_key),
                 },
             )
     
@@ -333,9 +389,10 @@ class MypvOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_MONITORED_CONDITIONS,
                     default=self.config_entry.options.get(
-                        CONF_MONITORED_CONDITIONS, self.selected_sensors  
+                        CONF_MONITORED_CONDITIONS, self.selected_sensors
                     ),
                 ): cv.multi_select(self.filtered_sensor_types),
+                vol.Optional(CONF_UPDATE_KEY, default=self.update_key): str,
             }
         )
 
