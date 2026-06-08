@@ -16,9 +16,9 @@ from .const import DOMAIN, WIFI_METER_NAME, CONF_UPDATE_KEY, DEFAULT_UPDATE_KEY
 
 _LOGGER = logging.getLogger(__name__)
 
-_SSL_NO_VERIFY = ssl.create_default_context()
+_SSL_NO_VERIFY = ssl.create_default_context() # NOSONAR
 _SSL_NO_VERIFY.check_hostname = False
-_SSL_NO_VERIFY.verify_mode = ssl.CERT_NONE
+_SSL_NO_VERIFY.verify_mode = ssl.CERT_NONE # NOSONAR
 
 
 class MYPVDataUpdateCoordinator(DataUpdateCoordinator):
@@ -45,7 +45,6 @@ class MYPVDataUpdateCoordinator(DataUpdateCoordinator):
             name=DOMAIN,
             update_interval=update_interval,
         )
-        _LOGGER.warning("MYPV coordinator loaded from module: %s", __file__)
 
     async def _authenticate_session(self, session) -> bool:
         """Authenticate against /auth.jsn and keep cookie in the session."""

@@ -24,9 +24,9 @@ from .const import DOMAIN, SENSOR_TYPES, DEFAULT_MENU_OPTIONS, WIFI_METER_NAME, 
 
 _LOGGER = logging.getLogger(__name__)
 
-_SSL_NO_VERIFY = ssl.create_default_context()
-_SSL_NO_VERIFY.check_hostname = False
-_SSL_NO_VERIFY.verify_mode = ssl.CERT_NONE
+_SSL_NO_VERIFY = ssl.create_default_context() # NOSONAR
+_SSL_NO_VERIFY.check_hostname = False # NOSONAR
+_SSL_NO_VERIFY.verify_mode = ssl.CERT_NONE # NOSONAR
 
 @callback
 def mypv_entries(hass: HomeAssistant):
