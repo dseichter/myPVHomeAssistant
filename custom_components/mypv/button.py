@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import CONF_HOST, CONF_DEVICE
 
+from .auth import authenticate_session
 from .const import DOMAIN, DATA_COORDINATOR, WIFI_METER_NAME, BOOST_BUTTON_NAME
 from .coordinator import _SSL_NO_VERIFY
 
@@ -71,7 +72,12 @@ class MYPVButton(CoordinatorEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Handle button press."""
         async with aiohttp.ClientSession() as session:
-            if not await self.coordinator.async_authenticate_session(session):
+            if not await authenticate_session(
+                session,
+                self._host,
+                self.coordinator.update_key,
+                _SSL_NO_VERIFY,
+            ):
                 _LOGGER.error("Authentication failed for my-PV device at %s", self._host)
                 return
 

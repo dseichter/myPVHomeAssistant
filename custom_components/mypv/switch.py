@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import CONF_HOST, CONF_DEVICE
 
+from .auth import authenticate_session
 from .const import DOMAIN, DATA_COORDINATOR, WIFI_METER_NAME
 from .coordinator import MYPVDataUpdateCoordinator, _SSL_NO_VERIFY
 
@@ -78,7 +79,12 @@ class ToggleSwitch(CoordinatorEntity, SwitchEntity):
     
     async def async_toggle_switch(self, mode):
         async with aiohttp.ClientSession() as session:
-            if not await self.coordinator.async_authenticate_session(session):
+            if not await authenticate_session(
+                session,
+                self._host,
+                self.coordinator.update_key,
+                _SSL_NO_VERIFY,
+            ):
                 _LOGGER.error("Authentication failed for my-PV device at %s", self._host)
                 return
 

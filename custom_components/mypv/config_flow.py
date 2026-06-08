@@ -20,6 +20,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 
+from .auth import authenticate_session
 from .const import DOMAIN, SENSOR_TYPES, DEFAULT_MENU_OPTIONS, WIFI_METER_NAME, WIFI_METER_SENSOR_TYPES, DEFAULT_MONITORED_CONDITIONS, AC_ELWA_E_NAME, CONF_UPDATE_KEY, DEFAULT_UPDATE_KEY
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,26 +52,6 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._devices = {}
         self._device_name = None
 
-    async def _authenticate_session(self, session, host) -> bool:
-        """Authenticate against /auth.jsn and keep cookie in session."""
-        if not self._update_key:
-            return True
-
-        timeout = ClientTimeout(total=5)
-        async with session.post(
-            f"https://{host}/auth.jsn",
-            timeout=timeout,
-            ssl=_SSL_NO_VERIFY,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"pw": self._update_key},
-        ) as response:
-            if response.status != 200:
-                return False
-
-            payload = await response.json(content_type=None)
-            auth_flag = payload.get("auth")
-            return auth_flag in (1, True, "1")
-
     def _host_in_configuration_exists(self, host) -> bool:
         """Return True if host exists in configuration."""
         return host in mypv_entries(self.hass)
@@ -79,7 +60,12 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Fetch sensor data and update _filtered_sensor_types."""
         async with aiohttp.ClientSession() as session:
             try:
-                is_authenticated = await self._authenticate_session(session, host)
+                is_authenticated = await authenticate_session(
+                    session,
+                    host,
+                    self._update_key,
+                    _SSL_NO_VERIFY,
+                )
                 if not is_authenticated:
                     _LOGGER.error("Authentication failed during sensor fetch for host %s", host)
                     self._filtered_sensor_types = {}
@@ -296,7 +282,12 @@ class MypvConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     
     async def check_device(self, session, ip):
         try:
-            is_authenticated = await self._authenticate_session(session, ip)
+            is_authenticated = await authenticate_session(
+                session,
+                ip,
+                self._update_key,
+                _SSL_NO_VERIFY,
+            )
             if not is_authenticated:
                 return None
 

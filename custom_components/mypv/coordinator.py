@@ -12,6 +12,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .auth import authenticate_session
 from .const import DOMAIN, WIFI_METER_NAME, CONF_UPDATE_KEY, DEFAULT_UPDATE_KEY
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,29 +47,10 @@ class MYPVDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=update_interval,
         )
 
-    async def _authenticate_session(self, session) -> bool:
-        """Authenticate against /auth.jsn and keep cookie in the session."""
-        if not self._update_key:
-            return True
-
-        timeout = ClientTimeout(total=5)
-        async with session.post(
-            f"https://{self._host}/auth.jsn",
-            timeout=timeout,
-            ssl=_SSL_NO_VERIFY,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"pw": self._update_key},
-        ) as response:
-            if response.status != 200:
-                return False
-
-            payload = await response.json(content_type=None)
-            auth_flag = payload.get("auth")
-            return auth_flag in (1, True, "1")
-
-    async def async_authenticate_session(self, session) -> bool:
-        """Public wrapper for authenticating a session against the device."""
-        return await self._authenticate_session(session)
+    @property
+    def update_key(self):
+        """Return update key used for device authentication."""
+        return self._update_key
 
     async def _fetch_json(self, session, url: str, timeout: ClientTimeout):
         """Fetch JSON from authenticated cookie session."""
@@ -79,39 +61,40 @@ class MYPVDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         """Fetch data."""
-        try:
-            async with aiohttp.ClientSession(connector=TCPConnector(ssl=_SSL_NO_VERIFY)) as session:
-                is_authenticated = await self._authenticate_session(session)
-                if not is_authenticated:
-                    _LOGGER.error(
-                        "Authentication failed for my-PV device at %s. "
-                        "Please check update key in integration options.",
-                        self._host,
-                    )
+        async with aiohttp.ClientSession(connector=TCPConnector(ssl=_SSL_NO_VERIFY)) as session:
+            is_authenticated = await authenticate_session(
+                session,
+                self._host,
+                self._update_key,
+                _SSL_NO_VERIFY,
+            )
+            if not is_authenticated:
+                _LOGGER.error(
+                    "Authentication failed for my-PV device at %s. "
+                    "Please check update key in integration options.",
+                    self._host,
+                )
+                return {}
+
+            if self._info is None:
+                self._info = await self.async_update_info(session)
+                if self._info is None:
                     return {}
 
-                if self._info is None:
-                    self._info = await self.async_update_info(session)
-                    if self._info is None:
-                        raise Exception("Could not connect to your my-PV device")
+            if self._data != "monitorjson":
+                self._setup = await self.async_update_setup(session)
+                if self._setup is None:
+                    return {}
 
-                if self._data != "monitorjson":
-                    self._setup = await self.async_update_setup(session)
-                    if self._setup is None:
-                        raise Exception("Could not connect to your my-PV device")
+            data = await self.async_update_data(session)
+            if data is None:
+                return {}
 
-                data = await self.async_update_data(session)
-                if data is None:
-                    raise Exception("Could not connect to your my-PV device")
-
-                return {
-                    "data": data,
-                    "info": self._info,
-                    "setup": self._setup,
-                }
-        except Exception as e:
-            # _LOGGER.error(f"Error fetching data from the API: {e}")
-            return {}
+            return {
+                "data": data,
+                "info": self._info,
+                "setup": self._setup,
+            }
 
     async def async_update_info(self, session):
         try:
